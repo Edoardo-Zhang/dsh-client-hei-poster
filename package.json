@@ -4,6 +4,7 @@
   "private": true,
   "description": "DeepSeek Harness 桌面版启动封面插件：全屏海报 + 「小能量精灵」梦境入口，点它才进入正常界面",
   "keywords": ["dsh", "deepseek-harness", "plugin", "skin", "splash-screen", "poster"],
+  "license": "MIT",
   "type": "module",
   "main": "./src/index.js",
   "files": [
@@ -12,7 +13,8 @@
     "cordis.patch.yml",
     "src/index.js",
     "src/client/**",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     ".": "./src/index.js",
