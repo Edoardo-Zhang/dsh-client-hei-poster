@@ -118,6 +118,9 @@ window.__HEI_POSTER__.setRestoreOnReturn(false)       // 只在冷启动显示�
 
 另外动效是**静态先画**的：每次显示先用一开始就有的那一帧顶住，图片落定后再交给动效接管，所以从托盘回来不会闪白屏。
 
+接管不是「等一次」，而是**每张海报的 `load` 事件各试一次**（`start()` 自己判断两张图是否都有像素）：
+冷启动时两张图先后到达，先到的那张试不成，后到的那张完成接管 —— 所以第一次运行（缓存还是空的）也能动起来。
+
 ## 打包与发布（Release 里那个 zip 是怎么来的）
 
 ```bash
@@ -152,11 +155,17 @@ git push origin v0.2.0
 node --check src/index.js                # 宿主半边语法
 node --test src/client/overlay.test.ts   # 状态机 24 项 + 动效契约 8 项 = 32 项
 node scripts/selfcheck-host.mjs          # 宿主路由 38 项（白名单 / Range / ETag / 路径逃逸）
-node scripts/selfcheck-client.mjs        # 客户端 44 项，在真实无头 Edge 里跑真产物
+node scripts/selfcheck-client.mjs        # 客户端 44 项，在真实无头浏览器里跑真产物
+node scripts/selfcheck-slow-poster.mjs   # 冷启动回归 5 项：故意让一张海报慢 700ms
 node scripts/build-client.mjs            # 重建 lib/client.js
 ```
 
-`selfcheck-client.mjs` 需要本机有 Edge；它在内存里起一个静态服务，把 `/plugins/<id>/assets/` 映射到真实素材，
+无头浏览器由 `scripts/lib/browser.mjs` 选：**先自证能用再交出去**（跑一次 `about:blank` 看有没有输出），
+顺序是 `HEI_BROWSER` → Chrome → Edge。
+这不是洁癖：Edge 154（2026-09）会把请求转交给已在运行的实例，自己退出码 0、**一个字节都不输出**——
+脚本要是不先验一下，那种「沉默」会被当成「没有失败」。
+
+`selfcheck-client.mjs` 在内存里起一个静态服务，把 `/plugins/<id>/assets/` 映射到真实素材，
 然后断言热区门禁（点海报不关、点入口才关）、轮换、武装延迟、禁用开关、Esc、teardown、零 `console.error`，
 以及 6 项动效接线：`motionMode` 在图片落定后变成 `"animated"`、`seekMotion(0 / 0.3333 / 0.5 / 0.99)` 的定帧不透明度、
 循环首尾一致、关闭封面后 `seekMotion` 不抛异常。

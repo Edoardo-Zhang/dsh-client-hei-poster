@@ -3,8 +3,9 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findBrowser } from "./lib/browser.mjs";
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const edge = ["C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe","C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"].find(p=>existsSync(p));
+const edge = await findBrowser();
 const TYPE = { ".html":"text/html; charset=utf-8", ".js":"text/javascript; charset=utf-8", ".png":"image/png" };
 const server = createServer((req,res)=>{
   let pathname="/"; try{ pathname=new URL(req.url??"/","http://127.0.0.1").pathname }catch{}

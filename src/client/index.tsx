@@ -48,12 +48,6 @@ const BODY_WAIT_TIMEOUT_MS = 10_000
 /** Poll period while waiting for <body>. */
 const BODY_POLL_MS = 250
 /**
- * How long show() waits for the two poster images to settle (load or error)
- * before the motion engine takes over. Cached images settle synchronously, so
- * this cap is only ever reached by a request that hangs.
- */
-const POSTER_SETTLE_TIMEOUT_MS = 1500
-/**
  * Overlay geometry. Kept in JS on purpose. The background is the posters' own
  * paper tone, so a poster that fails to load still looks deliberate rather than
  * like a broken blank screen.
@@ -257,83 +251,6 @@ function healthyLayer(failed: boolean[]): number {
   return 0
 }
 
-/**
- * Run `cb` once every poster layer has settled - loaded OR failed. An image that
- * is already `complete` never fires another event, so a wait that ignored that
- * flag would never hand over at all.
- *
- * `capMs` is the backstop for a request that never settles. `cb` runs at most
- * once, and every listener and timer is gone before it does.
- *
- * @returns an idempotent cancel function. After it runs `cb` never fires.
- */
-function whenPostersSettled(layers: HTMLImageElement[], capMs: number, cb: () => void): () => void {
-  let finished = false
-  let timer: unknown = null
-  const watched: HTMLImageElement[] = []
-
-  function stopWatching(): void {
-    if (finished) return
-    finished = true
-    if (timer !== null) {
-      const handle = timer
-      timer = null
-      try {
-        window.clearTimeout(handle as number)
-      } catch {
-        // ignore
-      }
-    }
-    for (const layer of watched) {
-      try {
-        layer.removeEventListener('load', onSettled)
-        layer.removeEventListener('error', onSettled)
-      } catch {
-        // ignore
-      }
-    }
-    watched.length = 0
-  }
-
-  /** Fires at most once: on the last load/error event, or on the cap timer. */
-  function onSettled(): void {
-    if (finished) return
-    stopWatching()
-    try {
-      cb()
-    } catch (error) {
-      warn('the poster-settled callback failed', error)
-    }
-  }
-
-  let pending = false
-  for (const layer of layers) {
-    try {
-      if (layer.complete === true) continue
-      pending = true
-      layer.addEventListener('load', onSettled)
-      layer.addEventListener('error', onSettled)
-      watched.push(layer)
-    } catch (error) {
-      warn('could not watch a poster layer for load', error)
-    }
-  }
-
-  if (!pending) {
-    onSettled()
-    return stopWatching
-  }
-
-  try {
-    timer = window.setTimeout(onSettled, capMs)
-  } catch (error) {
-    warn('could not arm the poster-settle backstop', error)
-    onSettled()
-  }
-
-  return stopWatching
-}
-
 /** Everything apply() does, so a single try/catch can contain all of it. */
 function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
   const doc = document
@@ -352,7 +269,8 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
   let memoryIndex: number | null = null
   let disposed = false
   let motion: MotionHandle | null = null
-  let readyCancel: (() => void) | null = null
+  /** Poster index of the current appearance; the motion starts from it. */
+  let shownIndex = 0
   let assetsFailed = false
   const failedLayers: boolean[] = POSTER_FILES.map(() => false)
 
@@ -410,26 +328,20 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
     return step.show
   }
 
-  /** Cancel a pending poster-settled wait, if any. Idempotent; never throws. */
-  const cancelReadyWait = (): void => {
-    const cancel = readyCancel
-    readyCancel = null
-    if (cancel === null) return
-    try {
-      cancel()
-    } catch (error) {
-      warn('cancelling the poster wait failed', error)
-    }
-  }
-
   const cleanup = (note: string): void => {
     if (disposed) return
     disposed = true
 
     // The motion owns a stylesheet inside .stage and two inline layer styles, so
-    // it must go before the nodes do. The ready wait is cancelled first: a late
-    // callback would otherwise start the timeline on a torn-down stage.
-    cancelReadyWait()
+    // it must go before the nodes do. The per-layer load listeners go first: a
+    // late load would otherwise start the timeline on a torn-down stage.
+    for (const img of posters) {
+      try {
+        img.removeEventListener('load', onLayerLoad)
+      } catch {
+        // ignore
+      }
+    }
     if (motion !== null) {
       const handle = motion
       motion = null
@@ -553,7 +465,6 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       // A missing poster cannot be animated: drop the motion for good and keep the
       // healthy layer on screen, so the cover is never just empty paper.
       assetsFailed = true
-      cancelReadyWait()
       if (motion !== null) {
         const handle = motion
         motion = null
@@ -585,6 +496,44 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
   } catch (error) {
     warn('could not create the poster motion; the cover stays static', error)
     motion = null
+  }
+
+  /**
+   * Hand the cover over to the motion engine. The engine refuses to animate
+   * until BOTH posters have real pixels, so this is safe to call at any time:
+   * it simply returns while a layer is missing and succeeds once the last one
+   * arrives. start() is idempotent for the same poster, so extra calls are free.
+   */
+  function tryStartMotion(): void {
+    if (disposed || assetsFailed || motion === null) return
+    // A hidden cover must not run a timeline nobody sees.
+    if (controller === null || !controller.visible) return
+    try {
+      motion.start(shownIndex)
+    } catch (error) {
+      warn('starting the motion failed', error)
+    }
+  }
+
+  /**
+   * Every load event is another chance to hand over.
+   *
+   * This is the cold-start fix. The one-shot wait that used to live here fired
+   * on the FIRST load event, called start() while the other poster still had
+   * naturalWidth === 0, the engine self-degraded to static - and nothing ever
+   * re-armed, so the whole appearance stayed static. Warm starts hid the bug
+   * because both posters were already decoded when the wait was armed.
+   */
+  function onLayerLoad(): void {
+    tryStartMotion()
+  }
+
+  for (const img of posters) {
+    try {
+      img.addEventListener('load', onLayerLoad)
+    } catch (error) {
+      warn('could not watch a poster layer for load', error)
+    }
   }
 
   // 3) The dream entrance. The ONLY clickable element in the cover.
@@ -631,29 +580,17 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       }
     },
     show: () => {
-      const index = advancePoster()
+      shownIndex = advancePoster()
       hostNode.style.setProperty('display', 'block')
       // Already degraded by a failed poster: the static paint above IS the cover.
       if (assetsFailed) return
-      // Re-armed on every show(): a tray restore usually finds the images cached,
-      // so the hand-over is synchronous and the cover never flashes.
-      cancelReadyWait()
-      try {
-        readyCancel = whenPostersSettled(posters, POSTER_SETTLE_TIMEOUT_MS, () => {
-          if (disposed) return
-          try {
-            motion?.start(index)
-          } catch (error) {
-            warn('starting the motion failed', error)
-          }
-        })
-      } catch (error) {
-        warn('could not arm the motion hand-over', error)
-      }
+      // Warm starts are synchronous: both posters are decoded, so the hand-over
+      // happens right here. Cold starts are completed by the load listener of
+      // whichever poster arrives last.
+      tryStartMotion()
     },
     hide: () => {
       // Freeze the timeline where it is; the next show() begins a fresh cycle.
-      cancelReadyWait()
       if (motion !== null) {
         try {
           motion.stop()

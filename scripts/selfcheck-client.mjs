@@ -10,22 +10,22 @@
  *   node scripts/selfcheck-client.mjs
  */
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { findBrowser } from "./lib/browser.mjs";
+
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const EDGE_CANDIDATES = [
-  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-];
-const edge = EDGE_CANDIDATES.find((p) => existsSync(p));
-if (edge === undefined) {
-  console.error("[selfcheck-client] no headless browser found; tried:");
-  for (const p of EDGE_CANDIDATES) console.error("  " + p);
+let edge;
+try {
+  edge = await findBrowser();
+} catch (error) {
+  console.error("[selfcheck-client] " + error.message);
   process.exit(2);
 }
+console.log("[selfcheck-client] browser: " + edge);
 
 const TYPE = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".png": "image/png" };
 
@@ -62,7 +62,9 @@ const dump = await new Promise((resolve, reject) => {
   child.stderr.on("data", (c) => { err += c.toString("utf8"); });
   child.on("error", reject);
   child.on("close", (code) => resolve({ out, err, code }));
-  setTimeout(() => { try { child.kill(); } catch { /* gone */ } }, 90000);
+  // child.kill() leaves browser children alive on Windows; those leftovers hold
+  // the profile, and every later run then prints 0 bytes with exit code 0.
+  setTimeout(() => { try { spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" }); } catch { /* gone */ } }, 90000);
 });
 
 server.close();
