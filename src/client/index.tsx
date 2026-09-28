@@ -456,6 +456,26 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       if (typeof doc.hidden === 'boolean') return doc.hidden
       return doc.visibilityState === 'hidden'
     },
+    isFocused: () => {
+      try {
+        return typeof doc.hasFocus === 'function' ? doc.hasFocus() : true
+      } catch (error) {
+        warn('could not read document focus', error)
+        return true
+      }
+    },
+    // Feeding blur/focus is what lets the controller tell a tray restore from
+    // Chromium merely reporting an occluded window as hidden.
+    onFocusChange: (handler) => {
+      const onFocus = () => handler(true)
+      const onBlur = () => handler(false)
+      window.addEventListener('focus', onFocus)
+      window.addEventListener('blur', onBlur)
+      return () => {
+        window.removeEventListener('focus', onFocus)
+        window.removeEventListener('blur', onBlur)
+      }
+    },
     show: () => {
       advancePoster()
       hostNode.style.setProperty('display', 'block')

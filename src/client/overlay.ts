@@ -38,6 +38,18 @@ export interface OverlayDeps {
   onVisibilityChange(handler: () => void): () => void;
   /** Read the current "page is hidden" state (document.hidden). */
   isHidden(): boolean;
+  /**
+   * Page focus (document.hasFocus()). Used to tell a REAL hide — tray or
+   * minimize, where the window was focused right up to the moment it vanished —
+   * from Chromium reporting a merely OCCLUDED window as hidden.
+   */
+  isFocused?(): boolean;
+  /**
+   * Subscribe to focus/blur; the handler receives the new focused state.
+   * Without it the occlusion filter is skipped and every hidden -> visible
+   * edge re-shows the cover (the pre-fix behaviour).
+   */
+  onFocusChange?(handler: (focused: boolean) => void): () => void;
   /** Make the cover visible. */
   show(): void;
   /** Make the cover invisible. */
@@ -57,6 +69,20 @@ export const INPUT_ARMING_MS = 250;
 /** Hard fail-safe: the cover closes itself this long after every show(). */
 export const AUTO_DISMISS_MS = 30_000;
 
+/**
+ * How long a blurred-but-still-visible stretch must last for a following
+ * "hidden" to count as Chromium occlusion instead of a real hide.
+ *
+ * Tray / minimize: the window is focused right up to the moment it disappears,
+ * so the page never sits blurred AND visible.
+ * Occlusion: the user clicks another window first (blur) and only later is this
+ * window fully covered — normally far longer than this.
+ *
+ * Trade-off: an occlusion that completes within this window is still treated as
+ * a real hide and will re-show the cover.
+ */
+export const OCCLUSION_BLUR_MS = 800;
+
 export class OverlayController {
   private deps: OverlayDeps;
   private showing = false;
@@ -67,6 +93,11 @@ export class OverlayController {
   private wasHidden = false;
   private started = false;
   private disposed = false;
+  /** When the page last blurred while still visible; null when focused. */
+  private blurredWhileVisibleAt: number | null = null;
+  /** Whether the pending hidden -> visible edge should re-show the cover. */
+  private restoreArmed = false;
+  private unsubscribeFocus: (() => void) | null = null;
 
   constructor(deps: OverlayDeps) {
     this.deps = deps;
@@ -105,6 +136,19 @@ export class OverlayController {
       this.log("start(): visibility subscription failed: " + describe(error));
       this.unsubscribe = null;
       this.wasHidden = false;
+    }
+
+    // Occlusion filter. Without this subscription every hidden -> visible edge
+    // re-shows the cover, which makes merely covering the window with another
+    // one look like a tray restore.
+    const onFocusChange = this.deps.onFocusChange;
+    if (onFocusChange !== undefined) {
+      try {
+        this.unsubscribeFocus = onFocusChange((focused) => this.handleFocusChange(focused));
+      } catch (error) {
+        this.log("start(): focus subscription failed: " + describe(error));
+        this.unsubscribeFocus = null;
+      }
     }
 
     this.show();
@@ -175,6 +219,15 @@ export class OverlayController {
         this.log("unsubscribe failed: " + describe(error));
       }
     }
+    const unsubscribeFocus = this.unsubscribeFocus;
+    this.unsubscribeFocus = null;
+    if (unsubscribeFocus !== null) {
+      try {
+        unsubscribeFocus();
+      } catch (error) {
+        this.log("focus unsubscribe failed: " + describe(error));
+      }
+    }
     if (this.showing) {
       this.showing = false;
       try {
@@ -191,12 +244,59 @@ export class OverlayController {
     const hidden = this.deps.isHidden();
     const wasHidden = this.wasHidden;
     this.wasHidden = hidden;
+
+    // Going hidden: decide NOW whether coming back should re-show the cover.
+    // Chromium reports a fully occluded window as hidden too, and that must not
+    // be mistaken for the window having been sent to the tray.
+    if (!wasHidden && hidden) {
+      this.restoreArmed = !this.lookedOccluded();
+      this.log("page hidden; will re-show on return = " + this.restoreArmed);
+      return;
+    }
+
     // Only the hidden -> visible edge re-shows the cover. Visible -> visible
     // events (alt-tab that never unloaded the page, focus changes) are ignored.
     if (wasHidden && !hidden) {
+      if (!this.restoreArmed) {
+        this.log("visible again, but the hide looked like occlusion; cover stays away");
+        return;
+      }
       this.log("page became visible again");
       this.show();
     }
+  }
+
+  /**
+   * True when the page sat blurred-but-visible long enough before going hidden
+   * that Chromium occlusion is the likely reason (see OCCLUSION_BLUR_MS).
+   */
+  private lookedOccluded(): boolean {
+    const blurredAt = this.blurredWhileVisibleAt;
+    if (blurredAt === null) return false;
+    try {
+      return this.deps.now() - blurredAt >= OCCLUSION_BLUR_MS;
+    } catch (error) {
+      this.log("lookedOccluded() failed: " + describe(error));
+      return false;
+    }
+  }
+
+  /** Track blurred-while-visible, the one thing that separates occlusion from a real hide. */
+  private handleFocusChange(focused: boolean): void {
+    if (this.disposed) return;
+    if (focused) {
+      this.blurredWhileVisibleAt = null;
+      return;
+    }
+    let hidden = false;
+    try {
+      hidden = this.deps.isHidden();
+    } catch (error) {
+      this.log("handleFocusChange() could not read visibility: " + describe(error));
+      hidden = false;
+    }
+    // A blur that arrives together with hiding is not an occlusion signal.
+    this.blurredWhileVisibleAt = hidden ? null : this.deps.now();
   }
 
   /** Evaluate the optional kill switch; a broken one must not break show(). */

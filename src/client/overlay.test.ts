@@ -32,6 +32,9 @@ class FakeHost {
   logs: string[] = [];
   timers = new Map<number, FakeTimer>();
   handlers: Array<() => void> = [];
+  focusHandlers: Array<(focused: boolean) => void> = [];
+  focusSubscriptions = 0;
+  focused = true;
   nextTimerId = 1;
 
   /** Number of timers still scheduled. */
@@ -61,6 +64,15 @@ class FakeHost {
         };
       },
       isHidden: () => this.hidden,
+      isFocused: () => this.focused,
+      onFocusChange: (handler) => {
+        this.focusHandlers.push(handler);
+        this.focusSubscriptions += 1;
+        return () => {
+          const index = this.focusHandlers.indexOf(handler);
+          if (index >= 0) this.focusHandlers.splice(index, 1);
+        };
+      },
       show: () => { this.showCalls += 1; },
       hide: () => { this.hideCalls += 1; },
       log: (message) => { this.logs.push(message); },
@@ -93,6 +105,12 @@ class FakeHost {
   setHidden(hidden: boolean): void {
     this.hidden = hidden;
     for (const handler of [...this.handlers]) handler();
+  }
+
+  /** Simulate a focus/blur and notify the focus subscribers. */
+  setFocused(focused: boolean): void {
+    this.focused = focused;
+    for (const handler of [...this.focusHandlers]) handler(focused);
   }
 }
 
@@ -306,4 +324,99 @@ test("start() twice is the same as start() once", () => {
   assert.equal(host.showCalls, 1);
   assert.equal(host.subscriptions, 1);
   assert.equal(host.liveTimers, 1);
+});
+// ---------------------------------------------------------------------------
+// Occlusion filter: Chromium reports a fully covered window as hidden too, and
+// that must not be mistaken for the window having been sent to the tray.
+// ---------------------------------------------------------------------------
+
+test("a real hide re-shows the cover when the window comes back", () => {
+  const { host, controller } = setup();
+  controller.start();                 // show #1
+  controller.dismiss("escape");       // the user closed the cover
+  assert.equal(controller.visible, false);
+
+  host.setHidden(true);               // window went away while still focused
+  host.setHidden(false);              // ... and came back
+  assert.equal(host.showCalls, 2);
+  assert.equal(controller.visible, true);
+});
+
+test("occlusion does not re-show the cover", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+
+  host.setFocused(false);             // the user clicked another window
+  host.advance(2000);                 // ... which only later covered this one
+  host.setHidden(true);
+  host.setHidden(false);
+
+  assert.equal(host.showCalls, 1, "the cover must stay away after an occlusion");
+  assert.equal(controller.visible, false);
+});
+
+test("a blur landing together with hiding is still a real hide", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+
+  host.setFocused(false);             // blur and hide arrive almost together
+  host.advance(100);                  // well under OCCLUSION_BLUR_MS
+  host.setHidden(true);
+  host.setHidden(false);
+
+  assert.equal(host.showCalls, 2);
+});
+
+test("regaining focus clears the occlusion marker", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+
+  host.setFocused(false);
+  host.advance(5000);                 // a long blurred-but-visible stretch
+  host.setFocused(true);              // the user comes back to the window
+  host.advance(5000);
+  host.setHidden(true);               // only later does the window really go
+  host.setHidden(false);
+
+  assert.equal(host.showCalls, 2, "a later real hide must still re-show");
+});
+
+test("a blur that arrives while already hidden is not an occlusion signal", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+
+  host.setHidden(true);
+  host.setFocused(false);             // focus is lost as part of hiding
+  host.advance(5000);
+  host.setHidden(false);
+
+  assert.equal(host.showCalls, 2);
+});
+
+test("without onFocusChange every hidden -> visible edge still re-shows", () => {
+  const host = new FakeHost();
+  const deps = host.deps();
+  delete (deps as { onFocusChange?: unknown }).onFocusChange;
+  const controller = new OverlayController(deps);
+  controller.start();
+  controller.dismiss("escape");
+
+  host.setFocused(false);
+  host.advance(5000);
+  host.setHidden(true);
+  host.setHidden(false);
+
+  assert.equal(host.showCalls, 2, "the filter is opt-in; without it nothing changes");
+});
+
+test("dispose() releases the focus subscription too", () => {
+  const { host, controller } = setup();
+  controller.start();
+  assert.equal(host.focusSubscriptions, 1);
+  controller.dispose();
+  assert.equal(host.focusHandlers.length, 0);
 });
