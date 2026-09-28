@@ -70,18 +70,24 @@ export const INPUT_ARMING_MS = 250;
 export const AUTO_DISMISS_MS = 30_000;
 
 /**
- * How long a blurred-but-still-visible stretch must last for a following
- * "hidden" to count as Chromium occlusion instead of a real hide.
+ * Grace window between losing focus and going hidden, below which the hide
+ * counts as real (tray / minimize) rather than Chromium occlusion.
  *
- * Tray / minimize: the window is focused right up to the moment it disappears,
- * so the page never sits blurred AND visible.
- * Occlusion: the user clicks another window first (blur) and only later is this
- * window fully covered — normally far longer than this.
+ * Tray: clicking the close button calls win.hide() synchronously, so blur and
+ * hidden reach the renderer essentially together — well under this.
+ * Minimize: same.
+ * Occlusion: the user clicks another window first, and Chromium only reports the
+ * covered window as hidden once its occlusion tracker notices — that latency is
+ * what this threshold separates.
  *
- * Trade-off: an occlusion that completes within this window is still treated as
- * a real hide and will re-show the cover.
+ * Tuned tight on purpose: an already-maximized window behind this one covers it
+ * within a few tens of milliseconds of the click, so a loose threshold would
+ * mistake that for a tray restore every time.
+ *
+ * This is a heuristic, not a guarantee. `restoreOnReturn` (below) is the escape
+ * hatch when it guesses wrong.
  */
-export const OCCLUSION_BLUR_MS = 800;
+export const OCCLUSION_BLUR_MS = 120;
 
 export class OverlayController {
   private deps: OverlayDeps;
@@ -98,6 +104,11 @@ export class OverlayController {
   /** Whether the pending hidden -> visible edge should re-show the cover. */
   private restoreArmed = false;
   private unsubscribeFocus: (() => void) | null = null;
+  /**
+   * Whether a real hidden -> visible edge re-shows the cover. Turned off by
+   * setRestoreOnReturn(false), which leaves the cover cold-start-only.
+   */
+  private restoreOnReturn = true;
 
   constructor(deps: OverlayDeps) {
     this.deps = deps;
@@ -249,20 +260,61 @@ export class OverlayController {
     // Chromium reports a fully occluded window as hidden too, and that must not
     // be mistaken for the window having been sent to the tray.
     if (!wasHidden && hidden) {
+      const blurredAt = this.blurredWhileVisibleAt;
+      const blurDelta = blurredAt === null ? null : this.deps.now() - blurredAt;
       this.restoreArmed = !this.lookedOccluded();
-      this.log("page hidden; will re-show on return = " + this.restoreArmed);
+      // Deliberately diagnosable: this line is the evidence when the heuristic
+      // guesses wrong. blurDelta "none" = the window never blurred first.
+      this.log(
+        "page hidden; blurDelta=" + (blurDelta === null ? "none" : blurDelta + "ms") +
+          "; focused=" + this.isFocused() +
+          "; re-showOnReturn=" + (this.restoreArmed && this.restoreOnReturn),
+      );
       return;
     }
 
     // Only the hidden -> visible edge re-shows the cover. Visible -> visible
     // events (alt-tab that never unloaded the page, focus changes) are ignored.
     if (wasHidden && !hidden) {
+      if (!this.restoreOnReturn) {
+        this.log("visible again; restore-on-return is switched off");
+        return;
+      }
       if (!this.restoreArmed) {
         this.log("visible again, but the hide looked like occlusion; cover stays away");
         return;
       }
       this.log("page became visible again");
       this.show();
+    }
+  }
+
+  /**
+   * Turn the "show again when the window comes back" behaviour on or off.
+   *
+   * Off leaves the cover cold-start-only. That is the only setting where
+   * occlusion is GUARANTEED never to bring it back, so it is the escape hatch
+   * when the heuristic guesses wrong on this machine.
+   */
+  setRestoreOnReturn(enabled: boolean): void {
+    this.restoreOnReturn = enabled === true;
+    this.log("restoreOnReturn = " + this.restoreOnReturn);
+  }
+
+  /** Whether a real hidden -> visible edge would re-show the cover. */
+  get willRestoreOnReturn(): boolean {
+    return this.restoreOnReturn;
+  }
+
+  /** Read page focus defensively; a missing or throwing probe reports focused. */
+  private isFocused(): boolean {
+    const focused = this.deps.isFocused;
+    if (focused === undefined) return true;
+    try {
+      return focused() === true;
+    } catch (error) {
+      this.log("isFocused() failed: " + describe(error));
+      return true;
     }
   }
 

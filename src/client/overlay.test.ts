@@ -420,3 +420,32 @@ test("dispose() releases the focus subscription too", () => {
   controller.dispose();
   assert.equal(host.focusHandlers.length, 0);
 });
+test("setRestoreOnReturn(false) makes the cover cold-start only", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+  controller.setRestoreOnReturn(false);
+  assert.equal(controller.willRestoreOnReturn, false);
+
+  host.setHidden(true);               // even a genuine tray hide...
+  host.setHidden(false);              // ...must not bring the cover back
+
+  assert.equal(host.showCalls, 1);
+  assert.equal(controller.visible, false);
+});
+
+test("setRestoreOnReturn(true) is the default and can be turned back on", () => {
+  const { host, controller } = setup();
+  controller.start();
+  controller.dismiss("escape");
+
+  controller.setRestoreOnReturn(false);
+  host.setHidden(true);
+  host.setHidden(false);
+  assert.equal(host.showCalls, 1);
+
+  controller.setRestoreOnReturn(true);
+  host.setHidden(true);
+  host.setHidden(false);
+  assert.equal(host.showCalls, 2, "re-enabling restores the tray behaviour");
+});

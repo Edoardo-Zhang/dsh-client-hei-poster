@@ -552,6 +552,13 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       entry: entryRef,
       controller,
       showPoster: (index: number) => paint(index),
+      /** 关掉「从托盘回来再显示」，封面就只在冷启动出现（彻底避免遮挡误弹）。 */
+      setRestoreOnReturn: (enabled: boolean) => {
+        if (controller !== null) controller.setRestoreOnReturn(enabled)
+      },
+      get restoreOnReturn(): boolean {
+        return controller !== null && controller.willRestoreOnReturn
+      },
       dismiss: (reason: DismissReason) => {
         if (controller !== null) controller.dismiss(reason === undefined ? 'timeout' : reason)
       },
