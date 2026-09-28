@@ -118,6 +118,32 @@ window.__HEI_POSTER__.setRestoreOnReturn(false)       // 只在冷启动显示�
 
 另外动效是**静态先画**的：每次显示先用一开始就有的那一帧顶住，图片落定后再交给动效接管，所以从托盘回来不会闪白屏。
 
+## 打包与发布（Release 里那个 zip 是怎么来的）
+
+```bash
+node scripts/pack-release.mjs            # 或者 npm run pack
+```
+
+产出 `dist/dsh-client-hei-poster-<版本>.zip`，**内容就是 `package.json` 的 `files` 白名单**——
+和 pnpm 装进 profile 的东西逐字节一致（14 个文件）；解包后是一个同名顶层目录，不会把文件散进下载目录。
+
+这个 zip 是**可复现**的：所有时间戳写死，同一棵树跑多少次都是同样的字节，所以发布说明里可以写 sha256 让人校验。
+
+放进 Release（**GitHub Desktop 没有 Release 功能**，这一步只能用浏览器）：
+
+```bash
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
+```
+
+1. 打开 `https://github.com/<你的用户名>/dsh-client-hei-poster/releases/new`
+2. **Choose a tag** 选 `v0.2.0`；**Release title** 填 `v0.2.0`；说明里贴发布正文
+3. 把 `dist/dsh-client-hei-poster-0.2.0.zip` **拖进 "Attach binaries by dropping them here"** 那个虚线框
+4. 点 **Publish release**
+
+核对：Assets 里除了 GitHub 自动生成的两个源码包（Source code (zip) / (tar.gz)），
+**必须还能看到你上传的那个文件名**；只有自动的那两个，说明拖拽没生效。
+
 ## 自检
 
 在仓库目录下：
@@ -159,6 +185,8 @@ src/client/lines.ts     入口文案
 lib/client.js           构建产物（window.__ModuleLoader__.load 包装，require 清单为空）
 assets/poster-*.png     两张海报素材 1536×1024
 docs/                   README 用的动效图与静图
+scripts/pack-release.mjs 打包：按 files 白名单生成可复现的发布 zip
+dist/                  打包产物（.gitignore，发 Release 时才上传）
 ```
 
 ## License

@@ -32,6 +32,7 @@
   },
   "scripts": {
     "build": "node scripts/build-client.mjs",
+    "pack": "node scripts/pack-release.mjs",
     "test": "node --test src/client/overlay.test.ts",
     "selfcheck": "node scripts/selfcheck-host.mjs && node scripts/selfcheck-client.mjs"
   },
