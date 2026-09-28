@@ -2,6 +2,10 @@
  * Client-half self-check: run the REAL lib/client.js inside a REAL Chromium
  * (headless Edge) and assert the boot-cover behaviour on a real DOM.
  *
+ * The harness writes its results block last and stamps it data-ready="1"; the
+ * dump is only accepted once that marker is there, so a run that is still waiting
+ * on an asynchronous assertion can never be read as green.
+ *
  *   cd _hei-poster/plugin
  *   node scripts/selfcheck-client.mjs
  */
@@ -63,12 +67,18 @@ const dump = await new Promise((resolve, reject) => {
 
 server.close();
 
-const match = /<pre id="results">([\s\S]*?)<\/pre>/.exec(dump.out);
+const match = /<pre id="results"([^>]*)>([\s\S]*?)<\/pre>/.exec(dump.out);
 if (match === null) {
   console.error("[selfcheck-client] the harness never wrote its results.");
   console.error("  edge exit code: " + dump.code);
   console.error("  stderr tail: " + dump.err.slice(-600));
   console.error("  stdout tail: " + dump.out.slice(-600));
+  process.exit(1);
+}
+if (!/\bdata-ready="1"/.test(match[1])) {
+  console.error("[selfcheck-client] the results block is not marked ready; the dump was taken mid-run.");
+  console.error("  pre attributes: " + match[1]);
+  console.error("  edge exit code: " + dump.code);
   process.exit(1);
 }
 
@@ -79,7 +89,7 @@ function decode(text) {
 }
 
 let results;
-try { results = JSON.parse(decode(match[1])); } catch (error) {
+try { results = JSON.parse(decode(match[2])); } catch (error) {
   console.error("[selfcheck-client] could not parse the harness results: " + error.message);
   process.exit(1);
 }
@@ -87,7 +97,8 @@ try { results = JSON.parse(decode(match[1])); } catch (error) {
 let passed = 0;
 const failures = [];
 for (const row of results) {
-  if (row.ok) { passed += 1; console.log("  ok   " + row.label); }
+  // The measured detail is printed for passing rows too: the numbers ARE the evidence.
+  if (row.ok) { passed += 1; console.log("  ok   " + row.label + (row.detail ? " -- " + row.detail : "")); }
   else { failures.push(row.label + (row.detail ? " -- " + row.detail : "")); console.log("  FAIL " + row.label + (row.detail ? " -- " + row.detail : "")); }
 }
 console.log("");

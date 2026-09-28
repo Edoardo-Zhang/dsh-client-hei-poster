@@ -10,7 +10,7 @@ window.__ModuleLoader__ = { load: function (reg) { window.__reg = reg; } };
 (function () {
   var out = [];
   function check(label, cond, detail) { out.push({ label: label, ok: !!cond, detail: detail === undefined ? "" : String(detail) }); }
-  function done() { document.getElementById("results").textContent = JSON.stringify(out); document.title = "DONE"; }
+  function done() { var box = document.getElementById("results"); box.textContent = JSON.stringify(out); box.setAttribute("data-ready", "1"); document.title = "DONE"; }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
   var effects = [];
   // cordis semantics: ctx.effect(fn) CALLS fn and treats its return value as the
@@ -111,6 +111,67 @@ window.__ModuleLoader__ = { load: function (reg) { window.__reg = reg; } };
       await sleep(20);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       check("Escape dismisses", ctrl.visible === false);
+
+      // ---- motion hand-over (0.2.0). Real bundle, real PNGs, real shadow root.
+      // The bounded poll is what keeps the first assertion honest: the engine is
+      // "static" until a start() actually succeeds, so the mode is read after the
+      // hand-over, never right after construction.
+      window.localStorage.setItem("hei.posterIndex", "1");   // next appearance = A
+      ctrl.show();
+      var motionPath = "real-assets";
+      var animated = false;
+      for (var wait = 0; wait < 100 && !animated; wait += 1) {
+        animated = window.__HEI_POSTER__.motionMode === "animated";
+        if (!animated) await sleep(50);                     // <= 5000ms virtual time
+      }
+      check("motionMode becomes animated once the posters settle", animated,
+        "path=" + motionPath + " motionMode=" + window.__HEI_POSTER__.motionMode +
+        " handle=" + (window.__HEI_POSTER__.motion ? "present" : "null"));
+
+      var mLayers = [posters[0], posters[1]];
+      function opacities() {
+        return mLayers.map(function (el) { return parseFloat(getComputedStyle(el).opacity); });
+      }
+
+      window.__HEI_POSTER__.seekMotion(0);
+      await sleep(20);
+      var o0 = opacities();
+      check("seekMotion(0): poster A at 1 and the pair summing to 1",
+        Math.abs(o0[0] - 1) <= 0.01 && Math.abs(o0[0] + o0[1] - 1) <= 0.02,
+        "opacity=" + JSON.stringify(o0) + " sum=" + (o0[0] + o0[1]));
+
+      window.__HEI_POSTER__.seekMotion(0.3333);
+      await sleep(20);
+      var oFlash = opacities();
+      check("seekMotion(0.3333) is the paper-flash midpoint: both at 0",
+        oFlash[0] <= 0.01 && oFlash[1] <= 0.01, "opacity=" + JSON.stringify(oFlash));
+
+      window.__HEI_POSTER__.seekMotion(0.5);
+      await sleep(20);
+      var oHalf = opacities();
+      check("seekMotion(0.5) shows poster B only",
+        Math.abs(oHalf[1] - 1) <= 0.01 && oHalf[0] <= 0.01, "opacity=" + JSON.stringify(oHalf));
+
+      window.__HEI_POSTER__.seekMotion(0.99);
+      await sleep(20);
+      var oEnd = opacities();
+      window.__HEI_POSTER__.seekMotion(0);
+      await sleep(20);
+      var oLoop = opacities();
+      check("0.99 and 0 agree within 0.05 (seamless loop)",
+        Math.abs(oEnd[0] - oLoop[0]) <= 0.05 && Math.abs(oEnd[1] - oLoop[1]) <= 0.05,
+        "0.99=" + JSON.stringify(oEnd) + " 0=" + JSON.stringify(oLoop));
+
+      // ---- closed cover: the handle must stay quiet instead of throwing
+      ctrl.dismiss("escape");
+      await sleep(20);
+      var afterClose = "threw";
+      try { afterClose = window.__HEI_POSTER__.seekMotion(0.5); }
+      catch (err) { afterClose = "threw: " + err; }
+      check("seekMotion after dismiss(escape) does not throw",
+        afterClose === true || afterClose === false,
+        "returned=" + afterClose + " motionMode=" + window.__HEI_POSTER__.motionMode +
+        " active=" + (window.__HEI_POSTER__.motion ? window.__HEI_POSTER__.motion.active : "n/a"));
 
       // ---- teardown
       ctrl.show();

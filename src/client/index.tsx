@@ -24,6 +24,8 @@ import { OverlayController } from './overlay'
 import type { DismissReason, OverlayDeps } from './overlay'
 import { ENTRY_CSS, createEntry } from './entry'
 import type { EntryHandle } from './entry'
+import { createMotion } from './motion'
+import type { MotionHandle } from './motion'
 
 /** Plugin id: must match package.json, cordis.patch.yml and src/index.js. */
 const PACKAGE_ID = 'dsh-client-hei-poster'
@@ -45,6 +47,12 @@ const DEGRADED_CLASS = 'hei-poster-root'
 const BODY_WAIT_TIMEOUT_MS = 10_000
 /** Poll period while waiting for <body>. */
 const BODY_POLL_MS = 250
+/**
+ * How long show() waits for the two poster images to settle (load or error)
+ * before the motion engine takes over. Cached images settle synchronously, so
+ * this cap is only ever reached by a request that hangs.
+ */
+const POSTER_SETTLE_TIMEOUT_MS = 1500
 /**
  * Overlay geometry. Kept in JS on purpose. The background is the posters' own
  * paper tone, so a poster that fails to load still looks deliberate rather than
@@ -237,6 +245,95 @@ function attachWhenBodyReady(doc: Document, mount: () => boolean, giveUp: () => 
   }
 }
 
+/**
+ * Index of the first poster layer that did NOT fail to load. When every layer
+ * failed this returns 0, which is harmless: a failed layer is display:none, so
+ * the overlay's own paper gradient shows through.
+ */
+function healthyLayer(failed: boolean[]): number {
+  for (let i = 0; i < failed.length; i += 1) {
+    if (failed[i] !== true) return i
+  }
+  return 0
+}
+
+/**
+ * Run `cb` once every poster layer has settled - loaded OR failed. An image that
+ * is already `complete` never fires another event, so a wait that ignored that
+ * flag would never hand over at all.
+ *
+ * `capMs` is the backstop for a request that never settles. `cb` runs at most
+ * once, and every listener and timer is gone before it does.
+ *
+ * @returns an idempotent cancel function. After it runs `cb` never fires.
+ */
+function whenPostersSettled(layers: HTMLImageElement[], capMs: number, cb: () => void): () => void {
+  let finished = false
+  let timer: unknown = null
+  const watched: HTMLImageElement[] = []
+
+  function stopWatching(): void {
+    if (finished) return
+    finished = true
+    if (timer !== null) {
+      const handle = timer
+      timer = null
+      try {
+        window.clearTimeout(handle as number)
+      } catch {
+        // ignore
+      }
+    }
+    for (const layer of watched) {
+      try {
+        layer.removeEventListener('load', onSettled)
+        layer.removeEventListener('error', onSettled)
+      } catch {
+        // ignore
+      }
+    }
+    watched.length = 0
+  }
+
+  /** Fires at most once: on the last load/error event, or on the cap timer. */
+  function onSettled(): void {
+    if (finished) return
+    stopWatching()
+    try {
+      cb()
+    } catch (error) {
+      warn('the poster-settled callback failed', error)
+    }
+  }
+
+  let pending = false
+  for (const layer of layers) {
+    try {
+      if (layer.complete === true) continue
+      pending = true
+      layer.addEventListener('load', onSettled)
+      layer.addEventListener('error', onSettled)
+      watched.push(layer)
+    } catch (error) {
+      warn('could not watch a poster layer for load', error)
+    }
+  }
+
+  if (!pending) {
+    onSettled()
+    return stopWatching
+  }
+
+  try {
+    timer = window.setTimeout(onSettled, capMs)
+  } catch (error) {
+    warn('could not arm the poster-settle backstop', error)
+    onSettled()
+  }
+
+  return stopWatching
+}
+
 /** Everything apply() does, so a single try/catch can contain all of it. */
 function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
   const doc = document
@@ -254,6 +351,10 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
   let onKeyDown: ((event: KeyboardEvent) => void) | null = null
   let memoryIndex: number | null = null
   let disposed = false
+  let motion: MotionHandle | null = null
+  let readyCancel: (() => void) | null = null
+  let assetsFailed = false
+  const failedLayers: boolean[] = POSTER_FILES.map(() => false)
 
   /** Read the persisted index; storage can be blocked, so callers guard it. */
   const readStoredIndex = (): number | null => {
@@ -288,7 +389,7 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
    * poster just like a cold start does. Falls back to an in-memory counter when
    * storage is unavailable, so the cover still alternates within one session.
    */
-  const advancePoster = (): void => {
+  const advancePoster = (): number => {
     let stored: number | null = null
     try {
       stored = readStoredIndex()
@@ -306,11 +407,38 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       // writeStoredIndex already warns
     }
     debug('showing poster #' + step.show + ' (' + POSTER_FILES[step.show] + ')')
+    return step.show
+  }
+
+  /** Cancel a pending poster-settled wait, if any. Idempotent; never throws. */
+  const cancelReadyWait = (): void => {
+    const cancel = readyCancel
+    readyCancel = null
+    if (cancel === null) return
+    try {
+      cancel()
+    } catch (error) {
+      warn('cancelling the poster wait failed', error)
+    }
   }
 
   const cleanup = (note: string): void => {
     if (disposed) return
     disposed = true
+
+    // The motion owns a stylesheet inside .stage and two inline layer styles, so
+    // it must go before the nodes do. The ready wait is cancelled first: a late
+    // callback would otherwise start the timeline on a torn-down stage.
+    cancelReadyWait()
+    if (motion !== null) {
+      const handle = motion
+      motion = null
+      try {
+        handle.dispose()
+      } catch (error) {
+        warn('disposing the motion failed', error)
+      }
+    }
 
     const cancel = cancelBodyWait
     cancelBodyWait = null
@@ -422,6 +550,21 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       // Degrade cleanly: hide this layer so a 404 leaves the paper-tone background
       // and the entry control, never a broken-image glyph or stray alt text.
       warn('poster ' + file + ' failed to load; the paper background shows instead')
+      // A missing poster cannot be animated: drop the motion for good and keep the
+      // healthy layer on screen, so the cover is never just empty paper.
+      assetsFailed = true
+      cancelReadyWait()
+      if (motion !== null) {
+        const handle = motion
+        motion = null
+        try {
+          handle.dispose()
+        } catch (error) {
+          warn('disposing the motion after a failed poster failed', error)
+        }
+      }
+      failedLayers[index] = true
+      paint(healthyLayer(failedLayers))
       try {
         img.style.setProperty('display', 'none')
         img.setAttribute('aria-hidden', 'true')
@@ -432,6 +575,17 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
     stage.appendChild(img)
     return img
   })
+
+  // 2b) The motion engine. It owns its own stylesheet (appended inside .stage), the
+  //     stage classes and the two layer styles - nothing else here touches them.
+  //     Created now, started later: the images may still be loading, and start()
+  //     decides for itself whether it can animate.
+  try {
+    motion = createMotion({ doc, stage, layers: posters, log: debug })
+  } catch (error) {
+    warn('could not create the poster motion; the cover stays static', error)
+    motion = null
+  }
 
   // 3) The dream entrance. The ONLY clickable element in the cover.
   //    The look lives in entry.ts behind a small interface, so an alternative
@@ -477,10 +631,36 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       }
     },
     show: () => {
-      advancePoster()
+      const index = advancePoster()
       hostNode.style.setProperty('display', 'block')
+      // Already degraded by a failed poster: the static paint above IS the cover.
+      if (assetsFailed) return
+      // Re-armed on every show(): a tray restore usually finds the images cached,
+      // so the hand-over is synchronous and the cover never flashes.
+      cancelReadyWait()
+      try {
+        readyCancel = whenPostersSettled(posters, POSTER_SETTLE_TIMEOUT_MS, () => {
+          if (disposed) return
+          try {
+            motion?.start(index)
+          } catch (error) {
+            warn('starting the motion failed', error)
+          }
+        })
+      } catch (error) {
+        warn('could not arm the motion hand-over', error)
+      }
     },
     hide: () => {
+      // Freeze the timeline where it is; the next show() begins a fresh cycle.
+      cancelReadyWait()
+      if (motion !== null) {
+        try {
+          motion.stop()
+        } catch (error) {
+          warn('stopping the motion failed', error)
+        }
+      }
       hostNode.style.setProperty('display', 'none')
     },
     disabled: () => isDisabled(),
@@ -551,6 +731,25 @@ function mountOverlay(teardownSlot: { current: (() => void) | null }): void {
       stage,
       entry: entryRef,
       controller,
+      /** Live motion handle; null once the cover degraded to static or is gone. */
+      get motion(): MotionHandle | null {
+        return motion
+      },
+      /** "animated" only after a successful start(); "static" is the safe default. */
+      get motionMode(): "animated" | "static" {
+        return motion === null ? "static" : motion.mode
+      },
+      /** Freeze the loop at `phase` (0..1) for screenshots and checks. */
+      seekMotion: (phase: number): boolean => {
+        if (motion === null) return false
+        try {
+          motion.seek(phase)
+          return true
+        } catch (error) {
+          warn('seekMotion failed', error)
+          return false
+        }
+      },
       showPoster: (index: number) => paint(index),
       /** 关掉「从托盘回来再显示」，封面就只在冷启动出现（彻底避免遮挡误弹）。 */
       setRestoreOnReturn: (enabled: boolean) => {

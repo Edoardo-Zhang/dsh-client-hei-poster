@@ -5,11 +5,51 @@
 <script>window.__ModuleLoader__={load:function(r){window.__reg=r;}}</script>
 <script src="/lib/client.js"></script>
 <script>
-// ?p=b seeds the rotation so the FIRST appearance is poster B (used for review shots).
-if (new URLSearchParams(location.search).get("p") === "b") {
-  try { localStorage.setItem("hei.posterIndex", "0"); } catch (e) {}
-}
-var mod = window.__reg.factory(function (s) { throw new Error("require " + s); });
-mod.apply({ effect: function (fn) { return fn(); } });
+// Query flags, all optional:
+//   ?p=b          seed the rotation so the FIRST appearance is poster B (review shots)
+//   ?phase=0.3333 freeze the loop at that phase; a screenshot must never depend on timing
+//   ?play=1       leave the timeline running (the default is frozen, so shots are stable)
+// Default behaviour: as soon as the engine can animate, seek(0) freezes the first frame.
+(function () {
+  var params = new URLSearchParams(location.search);
+  if (params.get("p") === "b") {
+    try { localStorage.setItem("hei.posterIndex", "0"); } catch (e) {}
+  }
+  var mod = window.__reg.factory(function (s) { throw new Error("require " + s); });
+  mod.apply({ effect: function (fn) { return fn(); } });
+
+  var handle = window.__HEI_POSTER__;
+  var raw = parseFloat(params.get("phase") || "");
+  var phase = isFinite(raw) ? raw : 0;
+  var play = params.get("play") === "1";
+
+  // Mirror the state into the DOM so --dump-dom can prove, without pixels, what the
+  // page did. "waiting" means the engine had not started yet - never a fake phase.
+  function record(phaseValue, mode, active) {
+    document.body.setAttribute("data-preview-phase", phaseValue);
+    document.body.setAttribute("data-preview-motion", mode);
+    document.body.setAttribute("data-preview-active", active);
+  }
+
+  // The engine reports "static" until a start() succeeds, and start() waits for the
+  // real PNGs, so poll instead of guessing. The 1ms step keeps the page alive long
+  // enough in real time for a cold image decode to win the race with virtual time.
+  function settle(tries) {
+    var mode = handle ? handle.motionMode : "no-handle";
+    var active = handle && handle.motion ? String(handle.motion.active) : "false";
+    if (!handle || !handle.motion || mode !== "animated") {
+      record("waiting", mode, active);
+      if (tries > 0) setTimeout(function () { settle(tries - 1); }, 1);
+      return;
+    }
+    if (!play) handle.seekMotion(phase);
+    record(play ? "playing" : String(phase), mode, String(handle.motion.active));
+    window.__PREVIEW__ = { phase: play ? "playing" : phase, motionMode: mode };
+    document.title = "hei-poster preview phase " + (play ? "playing" : phase);
+  }
+
+  record("waiting", handle ? handle.motionMode : "no-handle", "false");
+  settle(5000);   // up to 5s of virtual time for the images to settle
+})();
 </script>
 </body></html>

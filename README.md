@@ -14,9 +14,44 @@ DSH 桌面版启动封面插件：启动应用、或从托盘重新打开窗口�
 | 兜底 1 | 按 Esc 关闭 |
 | 兜底 2 | 每次显示 30 秒后自动关闭 |
 | 兜底 3 | Console 禁用开关（见下） |
-| 海报轮换 | **每次显示都换另一张**（A -> B -> A ...），索引用 localStorage 持久化 |
+| 转场 | A↔B 以 **12 秒为周期**循环：定格 → 纸闪溶解 → 定格 → 溶解回来；每次显示从另一张开始，索引用 localStorage 持久化 |
 | 输入武装 | 显示后 250ms 内的点击被忽略，避免窗口刚弹出的误触立刻关掉 |
 | 铺满方式 | object-fit: cover（1280x800 下上下各裁约 33 原始像素，片名与题词已实测保住） |
+
+## 动效与降级
+
+两张海报不再硬切，而是 **12 秒一循环的「纸闪」转场**（引擎 `src/client/motion.ts`，样式只进 shadow root）：
+
+| 时间 | 画面 |
+|---|---|
+| 0 – 2s | 定格 A，A 缓慢推近 |
+| 2 – 4s | A 淡出到全透明（同时推到 1.03） |
+| 4 – 6s | B 从全透明淡入（从 1.03 收到 1.015）；4s 这一瞬两张图都是 0 |
+| 6 – 8s | 定格 B，B 缓慢拉远 |
+| 8 – 10s | B 淡出到全透明；10s 这一瞬两张图都是 0 |
+| 10 – 12s | A 淡入，回到起点（与 0s 完全一致，循环无缝） |
+
+**为什么是「纸闪」而不是叠化**：4s / 10s 这两瞬间两张图都是全透明，屏幕上只剩浮层自己的米白纸色渐变。
+叠化会让两张海报的片名同时可见，出现两个标题叠在一起的鬼影；纸闪把「同时可见」压缩到一个瞬间，
+而透明处透出的是纸色、不是白，所以既没有鬼影也不会闪白屏。
+
+**降级路径**（下面任何一条命中都会退回静态海报，封面始终是一个完整画面）：
+
+| 条件 | 结果 |
+|---|---|
+| 系统开了 `prefers-reduced-motion: reduce` | 不动，静态显示本次轮换到的那张 |
+| 任一海报没加载出来（404 / 解码失败） | 静态显示**好着的那张**，坏的那层隐藏：不留破图、也不留只剩纸色的空封面 |
+| 引擎内部任何异常 | 只 `console.warn` 一行并退回静态，不影响 DSH 启动 |
+
+静态先画：每次 `show()` 先用 `.is-on` 硬切出第一帧，图片落定后再交给动效接管，所以从托盘回来不会闪白屏。
+
+排障：
+
+    window.__HEI_POSTER__.motionMode        // "animated" | "static"
+    window.__HEI_POSTER__.seekMotion(0.5)   // 手动定帧，0..1；截图排障用这个
+
+`seekMotion` 之后时间轴是暂停的（`motion.active === false`，但 `motionMode` 仍是 `"animated"`）；
+下一次 `show()` 会从相位 0 重新开始 —— 封面每次出现都是新的一轮，这是预期行为。
 
 ## 为什么「被别的窗口盖住」不会弹海报
 
@@ -100,13 +135,15 @@ F12 打开 Console：
 在工作区目录 D:/X Files/DSH/dsh01/_hei-poster/plugin 下：
 
     node --check src/index.js           # 宿主半边语法
-    node --test src/client/overlay.test.ts   # 状态机 15 项单测
+    node --test src/client/overlay.test.ts   # 状态机 24 项 + 动效契约 8 项 = 32 项单测
     node scripts/selfcheck-host.mjs     # 宿主路由 38 项（白名单/Range/ETag/逃逸）
-    node scripts/selfcheck-client.mjs   # 客户端 36 项，在真实无头 Edge 里跑真产物
+    node scripts/selfcheck-client.mjs   # 客户端 44 项，在真实无头 Edge 里跑真产物
     node scripts/build-client.mjs       # 重建 lib/client.js
 
 `selfcheck-client.mjs` 需要本机有 Edge；它会在内存里起一个静态服务，把 /plugins/<id>/assets/ 映射到真实素材，
-然后断言热区门禁（点海报不关、点入口才关）、轮换、武装延迟、禁用开关、Esc、teardown 与零 console.error。
+然后断言热区门禁（点海报不关、点入口才关）、轮换、武装延迟、禁用开关、Esc、teardown 与零 console.error，
+以及 6 项动效接线：`motionMode` 在图片落定后变成 `"animated"`、`seekMotion(0/0.3333/0.5/0.99)` 的定帧不透明度、
+循环首尾一致、关闭封面后 `seekMotion` 不抛异常。
 
 ## 设计约束（不要动）
 
