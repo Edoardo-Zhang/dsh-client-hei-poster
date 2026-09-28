@@ -1,0 +1,133 @@
+<!doctype html><html><head><meta charset="utf-8"><title>hei-poster client selfcheck</title></head>
+<body><div id="root"><p>host ui</p></div><pre id="results">RUNNING</pre>
+<script>
+window.__errors = [];
+(function () { var e = console.error; console.error = function () { window.__errors.push(Array.prototype.join.call(arguments, " ")); e.apply(console, arguments); }; })();
+window.__ModuleLoader__ = { load: function (reg) { window.__reg = reg; } };
+</script>
+<script src="/lib/client.js"></script>
+<script>
+(function () {
+  var out = [];
+  function check(label, cond, detail) { out.push({ label: label, ok: !!cond, detail: detail === undefined ? "" : String(detail) }); }
+  function done() { document.getElementById("results").textContent = JSON.stringify(out); document.title = "DONE"; }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  var effects = [];
+  // cordis semantics: ctx.effect(fn) CALLS fn and treats its return value as the
+  // disposer. Storing fn itself would test nothing.
+  function makeCtx() { return { effect: function (fn) { var disposer = fn(); effects.push(disposer); return disposer; } }; }
+
+  (async function () {
+    try {
+      check("bundle registered itself", !!window.__reg && window.__reg.id === "dsh-client-hei-poster", window.__reg && window.__reg.id);
+      var mod = window.__reg.factory(function (s) { throw new Error("unexpected require: " + s); });
+      check("factory exposes empty inject", Array.isArray(mod.inject) && mod.inject.length === 0, JSON.stringify(mod.inject));
+      check("factory exposes apply()", typeof mod.apply === "function");
+
+      window.localStorage.removeItem("hei.posterIndex");
+      var ctx = makeCtx();
+      mod.apply(ctx);
+      await sleep(50);
+
+      var host = document.getElementById("hei-poster-overlay");
+      check("overlay is on document.body", !!host && host.parentNode === document.body);
+      check("overlay is a sibling of #root, not inside it", !!host && document.getElementById("root").contains(host) === false);
+      check("z-index is 2000", !!host && host.style.zIndex === "2000", host && host.style.zIndex);
+      check("teardown was registered via ctx.effect", effects.length === 1, effects.length);
+
+      var sr = host.shadowRoot;
+      check("shadow root exists", !!sr);
+      var posters = sr.querySelectorAll("img.poster");
+      check("two poster layers exist", posters.length === 2, posters.length);
+      check("poster A is first and painted", posters[0] && posters[0].getAttribute("src") === "/plugins/dsh-client-hei-poster/assets/poster-a.png", posters[0] && posters[0].getAttribute("src"));
+      check("poster B src is correct", posters[1] && posters[1].getAttribute("src") === "/plugins/dsh-client-hei-poster/assets/poster-b.png");
+      check("first appearance shows A", posters[0].classList.contains("is-on") && !posters[1].classList.contains("is-on"));
+      check("rotation index persisted as 0", window.localStorage.getItem("hei.posterIndex") === "0", window.localStorage.getItem("hei.posterIndex"));
+
+      var entry = sr.querySelector(".entry");
+      check("chat-window entry exists", !!entry);
+      check("entry has the sprite, the label row", !!sr.querySelector(".entry__bar") && !!sr.querySelector(".entry__input") && !!sr.querySelector(".entry__caret"));
+      check("entry advertises the action", entry && entry.getAttribute("role") === "button" && entry.getAttribute("aria-label") === "我们都在同一个世界", entry && entry.getAttribute("aria-label"));
+      check("entry shows the entry label", sr.querySelector(".entry__caret") && sr.querySelector(".entry__caret").textContent === "我们都在同一个世界", sr.querySelector(".entry__caret") && sr.querySelector(".entry__caret").textContent);
+      check("the line bubble is gone", sr.querySelector(".entry__msg") === null);
+
+      var ctrl = window.__HEI_POSTER__.controller;
+      check("cover starts visible", ctrl.visible === true);
+
+      // ---- hot-zone gating: clicks anywhere but the entry must NOT dismiss
+      function clickAt(el) { el.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true })); }
+      await sleep(300);
+      clickAt(posters[0]);
+      check("clicking poster A does NOT dismiss", ctrl.visible === true);
+      clickAt(posters[1]);
+      check("clicking poster B does NOT dismiss", ctrl.visible === true);
+      clickAt(sr.querySelector(".entry__caret"));
+      check("clicking the label INSIDE the entry DOES dismiss", ctrl.visible === false);
+
+      // ---- alternation across appearances
+      ctrl.show();
+      await sleep(20);
+      check("second appearance shows B", posters[1].classList.contains("is-on") && !posters[0].classList.contains("is-on"));
+      check("rotation index is now 1", window.localStorage.getItem("hei.posterIndex") === "1", window.localStorage.getItem("hei.posterIndex"));
+      check("cover is visible again", ctrl.visible === true);
+
+      await sleep(300);
+      clickAt(entry);
+      check("entry click dismisses again", ctrl.visible === false);
+      ctrl.show();
+      await sleep(20);
+      check("third appearance wraps back to A", posters[0].classList.contains("is-on") && !posters[1].classList.contains("is-on"));
+      check("rotation index wrapped to 0", window.localStorage.getItem("hei.posterIndex") === "0", window.localStorage.getItem("hei.posterIndex"));
+
+      // ---- arming window: a click right after show() is ignored
+      ctrl.dismiss("timeout");
+      ctrl.show();
+      await sleep(20);
+      clickAt(entry);
+      check("click inside the 250ms arming window is ignored", ctrl.visible === true);
+      await sleep(280);
+      clickAt(entry);
+      check("click after the arming window dismisses", ctrl.visible === false);
+
+      // ---- corrupted storage
+      window.localStorage.setItem("hei.posterIndex", "not-a-number");
+      ctrl.show();
+      await sleep(20);
+      check("corrupted index falls back to poster A", posters[0].classList.contains("is-on"));
+      check("corrupted index is repaired to 0", window.localStorage.getItem("hei.posterIndex") === "0", window.localStorage.getItem("hei.posterIndex"));
+
+      // ---- kill switch (must start hidden: the switch suppresses showing, it does
+      // not hide a cover that is already up)
+      ctrl.dismiss("timeout");
+      await sleep(20);
+      window.__HEI_POSTER_DISABLE__ = true;
+      ctrl.show();
+      await sleep(20);
+      check("kill switch suppresses show()", ctrl.visible === false, "visible=" + ctrl.visible);
+      delete window.__HEI_POSTER_DISABLE__;
+
+      // ---- Escape
+      ctrl.show();
+      await sleep(20);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      check("Escape dismisses", ctrl.visible === false);
+
+      // ---- teardown
+      ctrl.show();
+      await sleep(20);
+      effects[0]();
+      await sleep(20);
+      check("teardown removes the overlay node", document.getElementById("hei-poster-overlay") === null);
+      check("teardown removes the global handle", window.__HEI_POSTER__ === undefined);
+      check("teardown is idempotent", (function () { try { effects[0](); return true; } catch (e) { return false; } })());
+
+      // ---- no console errors
+      check("no console errors were recorded", window.__errors.length === 0, window.__errors.join(" | "));
+    } catch (err) {
+      check("harness ran without throwing", false, (err && err.stack) || String(err));
+    }
+    done();
+  })();
+})();
+</script>
+</body></html>

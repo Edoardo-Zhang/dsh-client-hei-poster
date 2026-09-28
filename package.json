@@ -1,0 +1,39 @@
+{
+  "name": "dsh-client-hei-poster",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DeepSeek Harness 桌面版启动封面插件：全屏海报 + 「小能量精灵」梦境入口，点它才进入正常界面",
+  "keywords": ["dsh", "deepseek-harness", "plugin", "skin", "splash-screen", "poster"],
+  "type": "module",
+  "main": "./src/index.js",
+  "files": [
+    "assets/**",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "src/index.js",
+    "src/client/**",
+    "README.md"
+  ],
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "test": "node --test src/client/overlay.test.ts",
+    "selfcheck": "node scripts/selfcheck-host.mjs && node scripts/selfcheck-client.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

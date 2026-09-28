@@ -1,0 +1,12 @@
+# 依赖与构建期产物（esbuild 只为构建用，不进仓库）
+node_modules/
+
+# 本地测试/截图留下的临时目录
+.cache/
+.logs/
+
+# 系统与编辑器噪声
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

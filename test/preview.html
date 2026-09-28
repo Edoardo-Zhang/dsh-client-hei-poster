@@ -1,0 +1,15 @@
+<!doctype html><html><head><meta charset="utf-8"><title>hei-poster cover preview</title>
+<style>body{margin:0;font:14px system-ui}#root{padding:24px;color:#333}</style>
+</head><body>
+<div id="root"><h1>DeepSeek Harness</h1><p>This is the host UI the cover must hide.</p></div>
+<script>window.__ModuleLoader__={load:function(r){window.__reg=r;}}</script>
+<script src="/lib/client.js"></script>
+<script>
+// ?p=b seeds the rotation so the FIRST appearance is poster B (used for review shots).
+if (new URLSearchParams(location.search).get("p") === "b") {
+  try { localStorage.setItem("hei.posterIndex", "0"); } catch (e) {}
+}
+var mod = window.__reg.factory(function (s) { throw new Error("require " + s); });
+mod.apply({ effect: function (fn) { return fn(); } });
+</script>
+</body></html>
