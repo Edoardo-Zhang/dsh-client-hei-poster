@@ -1,168 +1,166 @@
-# dsh-client-hei-poster
+# 罗小黑战记 · DSH 启动封面
 
-DSH 桌面版启动封面插件：启动应用、或从托盘重新打开窗口时，用一张全屏「罗小黑战记」海报盖住界面。
-**只有点击右下角的「聊天窗口」入口才能进入正常界面**，点海报其他任何位置都没有反应。
+<p align="center">
+  <img src="docs/demo.gif" alt="启动封面动效演示：海报 A 定格 → 纸色一闪 → 海报 B 定格 → 再闪回来" width="640">
+</p>
 
-## 行为规格
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-2b2b2b" alt="license">
+  <img src="https://img.shields.io/badge/version-0.2.0-2f8f6f" alt="version">
+  <img src="https://img.shields.io/badge/DSH%20desktop-client%20plugin-5a6b8c" alt="platform">
+</p>
 
-| 项目 | 行为 |
+**DSH 桌面版客户端插件。** 启动应用、或者把窗口从托盘叫回来，先用一整幅水墨海报盖住界面；
+**只有点右下角那只小能量精灵，才进得去。**
+
+---
+
+## 它不只是「一张启动图」
+
+| | 细节 |
 |---|---|
-| 显示时机 | ① 应用启动 ② 窗口**真的**从托盘/最小化回来（hidden -> visible 边沿） |
-| 不显示时机 | 单纯 alt-tab 切走再切回、页面一直可见时的 focus 变化 |
-| **不显示：被其他窗口遮挡** | Chromium 也会把「被完全盖住的窗口」报成 hidden，这里做了过滤（见下） |
-| 关闭方式 | **只认**右下角聊天窗口控件被点击（或键盘 Enter/Space 激活它） |
-| 兜底 1 | 按 Esc 关闭 |
-| 兜底 2 | 每次显示 30 秒后自动关闭 |
-| 兜底 3 | Console 禁用开关（见下） |
-| 转场 | A↔B 以 **12 秒为周期**循环：定格 → 纸闪溶解 → 定格 → 溶解回来；每次显示从另一张开始，索引用 localStorage 持久化 |
-| 输入武装 | 显示后 250ms 内的点击被忽略，避免窗口刚弹出的误触立刻关掉 |
-| 铺满方式 | object-fit: cover（1280x800 下上下各裁约 33 原始像素，片名与题词已实测保住） |
+| 🌀 | **纸闪转场**：两张海报 12 秒一循环——定格 → 纸色一闪 → 换张 → 再闪回来。为什么不用叠化？两张海报的片名一个在左下、一个在左上，叠化会让两个「羅小黑戰記」同时半透明地叠在一起。纸闪把「两张同时可见」压缩成一个瞬间，而透出来的是海报自己的米白纸色，不是白屏 |
+| ✨ | **整屏唯一入口**：热区只有右下角那只精灵（`我们都在同一个世界 →`）。点海报任何别的位置都没反应——不会手一抖就把封面碰掉 |
+| 🪟 | **遮挡不误弹**：Chromium 会把「被别的窗口完全盖住」也报成 `document.hidden`，跟收进托盘在 API 上完全一样。这里用「**先失焦、又保持可见超过 120 ms、然后才隐藏**」把遮挡滤掉（启发式，见下文） |
+| 🛟 | **坏掉也锁不死**：入口失灵还有 Esc、30 秒自动关、控制台开关三条退路；海报 404 就静态显示好着的那张；系统开了「减少动态效果」就自动不动 |
 
-## 动效与降级
-
-两张海报不再硬切，而是 **12 秒一循环的「纸闪」转场**（引擎 `src/client/motion.ts`，样式只进 shadow root）：
+## 一个周期里发生了什么
 
 | 时间 | 画面 |
 |---|---|
-| 0 – 2s | 定格 A，A 缓慢推近 |
-| 2 – 4s | A 淡出到全透明（同时推到 1.03） |
-| 4 – 6s | B 从全透明淡入（从 1.03 收到 1.015）；4s 这一瞬两张图都是 0 |
-| 6 – 8s | 定格 B，B 缓慢拉远 |
-| 8 – 10s | B 淡出到全透明；10s 这一瞬两张图都是 0 |
-| 10 – 12s | A 淡入，回到起点（与 0s 完全一致，循环无缝） |
+| 0 – 2s | 定格 A，A 缓慢推近（scale 1.00 → 1.015） |
+| 2 – 4s | A 淡出到全透明，同时推到 1.03 |
+| 4 – 6s | B 从全透明淡入，从 1.03 收到 1.015；**4s 这一瞬两张图都是 0** |
+| 6 – 8s | 定格 B，B 缓慢拉远（1.015 → 1.00） |
+| 8 – 10s | B 淡出到全透明；**10s 这一瞬两张图都是 0** |
+| 10 – 12s | A 淡入，回到起点——与 0s 完全一致，循环无缝 |
 
-**为什么是「纸闪」而不是叠化**：4s / 10s 这两瞬间两张图都是全透明，屏幕上只剩浮层自己的米白纸色渐变。
-叠化会让两张海报的片名同时可见，出现两个标题叠在一起的鬼影；纸闪把「同时可见」压缩到一个瞬间，
-而透明处透出的是纸色、不是白，所以既没有鬼影也不会闪白屏。
+纸闪那两个瞬间，屏幕上只剩浮层自己的米白纸色渐变：
 
-**降级路径**（下面任何一条命中都会退回静态海报，封面始终是一个完整画面）：
+<img src="docs/phase-paper.png" alt="纸闪中点：只剩米白纸色" width="640">
 
-| 条件 | 结果 |
+## 装它
+
+**① 装进桌面版 profile**（桌面版 profile 硬编码为 `profiles/desktop`，官方 `dsh plugin` 命令不支持它，要用桌面版自带的 pnpm）：
+
+```powershell
+cd "$env:USERPROFILE\.dsh\profiles\desktop"
+node "C:\Program Files\DeepSeek Harness\resources\runtime\pnpm\bin\pnpm.mjs" add "<本仓库路径>"
+```
+
+**② profile 的 `package.json` 里两处都要有**，缺一不加载：
+
+```jsonc
+{
+  "dependencies": { "dsh-client-hei-poster": "file:<本仓库路径>" },
+  "dsh": { "profile": { "bundles": [ "...", "dsh-client-hei-poster" ] } }
+}
+```
+
+**③ 重启桌面版。**
+
+> ⚠️ 桌面版**运行中会自己改写 profile 文件**，所以每次读写前重新读一遍，不要拿旧内容覆盖。
+
+## 装上以后
+
+**想关掉封面**（按顺序试）：
+
+| 方式 | 做法 |
 |---|---|
-| 系统开了 `prefers-reduced-motion: reduce` | 不动，静态显示本次轮换到的那张 |
-| 任一海报没加载出来（404 / 解码失败） | 静态显示**好着的那张**，坏的那层隐藏：不留破图、也不留只剩纸色的空封面 |
-| 引擎内部任何异常 | 只 `console.warn` 一行并退回静态，不影响 DSH 启动 |
+| 正常入口 | 点右下角小能量精灵 |
+| 快捷键 | 按 `Esc` |
+| 等 | 30 秒后自动关闭 |
+| 本次会话 | `window.__HEI_POSTER_DISABLE__ = true` |
+| 永久 | `localStorage.setItem("hei.noPoster", "1")`（恢复：`localStorage.removeItem("hei.noPoster")`） |
+| DevTools | 给 `<html>` 加属性 `data-hei-off` |
 
-静态先画：每次 `show()` 先用 `.is-on` 硬切出第一帧，图片落定后再交给动效接管，所以从托盘回来不会闪白屏。
+**想确认插件真的加载了**（F12 → Console）：
 
-排障：
+```js
+document.querySelector("#hei-poster-overlay")        // 应该返回一个 div
+window.__HEI_POSTER__.motionMode                      // "animated" | "static"
+window.__HEI_POSTER__.seekMotion(0.3333)              // 手动定帧到纸闪瞬间
+window.__HEI_POSTER__.setRestoreOnReturn(false)       // 只在冷启动显示封面
+```
 
-    window.__HEI_POSTER__.motionMode        // "animated" | "static"
-    window.__HEI_POSTER__.seekMotion(0.5)   // 手动定帧，0..1；截图排障用这个
+`seekMotion()` 之后时间轴是暂停的（`motion.active === false`，但 `motionMode` 仍是 `"animated"`）；
+封面下次出现会从相位 0 重新开始——每次都是新的一轮，这是预期行为。
 
-`seekMotion` 之后时间轴是暂停的（`motion.active === false`，但 `motionMode` 仍是 `"animated"`）；
-下一次 `show()` 会从相位 0 重新开始 —— 封面每次出现都是新的一轮，这是预期行为。
-
-## 为什么「被别的窗口盖住」不会弹海报
-
-Chromium 会为了省电把**被完全遮挡**的窗口也标记成 `document.hidden`，跟「收进托盘」在 API 上完全一样。
-而 Electron 没有暴露任何「窗口是否真的可见」的接口（preload 里没有，主进程也没开 occlusion 相关开关），
-所以只能从渲染进程自己分辨。判据是**失焦与隐藏的先后关系**：
-
-| 场景 | 隐藏之前发生了什么 |
-| --- | --- |
-| 点 X 收进托盘 / 点最小化 | 窗口**一直聚焦**，失焦与隐藏同时发生 |
-| 被别的窗口盖住 | 用户**先点了别的窗口**（失焦），页面**还可见一段时间**，之后才被完全遮挡 |
-
-规则：**「先失焦、又保持可见超过 120ms，然后才隐藏」= 遮挡，回来时不重新显示。**
-这个判据对事件先后顺序不敏感，比「看当前是否聚焦」稳。
-
-> ⚠️ **这是启发式，不是保证。** 阈值取 120ms 是因为「点一个本来就最大化的窗口」会在几十毫秒内
-> 盖住 DSH——阈值放宽就会每次都误判。阈值在 `src/client/overlay.ts` 的 `OCCLUSION_BLUR_MS`。
-
-### 猜错了怎么办
-
-**① 看日志。** 每次隐藏都会在 Console 打一行，直接告诉你判据当时算成了什么：
+**遮挡误弹了怎么办**：先看 Console 里那行诊断，它直接告诉你判据当时算成了什么——
 
 ```
 [dsh-client-hei-poster] page hidden; blurDelta=35ms; focused=false; re-showOnReturn=true
 ```
 
-- `blurDelta=none` → 隐藏前窗口一直聚焦 → 判为**真实隐藏**（托盘/最小化）
-- `blurDelta` 大 → 先失焦很久才隐藏 → 判为**遮挡**
+`blurDelta=none` 说明隐藏前窗口一直聚焦 → 判为真实隐藏（托盘 / 最小化）；`blurDelta` 很大则是先失焦很久才隐藏 → 判为遮挡。
+阈值在 `src/client/overlay.ts` 的 `OCCLUSION_BLUR_MS`（120 ms）。**这是启发式，不是保证**；
+要彻底零误判就用 `setRestoreOnReturn(false)`，代价是失去「从托盘回来再显示」。
 
-**② 一定要彻底避免遮挡误弹，就关掉「回来再显示」：**
+## 换掉里面的海报
 
-```js
-window.__HEI_POSTER__.setRestoreOnReturn(false)   // 之后只在冷启动显示
-window.__HEI_POSTER__.setRestoreOnReturn(true)    // 改回来
-```
+直接覆盖 `assets/poster-a.png` 与 `assets/poster-b.png`（1536×1024），**不用改代码、不用重新构建**——
+转场时间轴、循环、降级逻辑都按文件走。
 
-这是唯一能把遮挡误弹**降到零**的设置——代价是失去「从托盘回来再显示」。
+<p>
+  <img src="docs/poster-a.jpg" alt="海报 A" width="48%">
+  <img src="docs/poster-b.jpg" alt="海报 B" width="48%">
+</p>
 
-## 三张海报怎么换
+仓库里这两张是 **AI 生成的示范素材**，换成你自己的图即可。
 
-> 仓库里自带的两张海报是 **AI 生成的素材**，只为让插件开箱可跑；换成你自己的图即可。
+## 降级：任何一条命中都退回静态
 
+| 条件 | 结果 |
+|---|---|
+| 系统开了 `prefers-reduced-motion: reduce` | 不出动画，静态显示本次轮换到的那张 |
+| 任一海报没加载出来（404 / 解码失败） | 静态显示**好着的那张**，坏的那层隐藏——不留破图，也不留只剩纸色的空封面 |
+| 图层不足两个 / 引擎内部异常 | 只 `console.warn` 一行并退回静态 |
 
-素材在 assets/poster-a.png 与 assets/poster-b.png（1536x1024，PNG）。
-**替换真素材时只需覆盖这两个同名文件，不需要改代码、不需要重新构建。**
-
-轮换顺序：首次运行显示 A；之后每次封面出现都前进一张，用 localStorage 的 hei.posterIndex 记住上次显示的是哪张。
-清掉这个键（`localStorage.removeItem("hei.posterIndex")`）就会从 A 重新开始。
-
-## 遇到问题怎么关掉封面
-
-按顺序试：
-
-1. **点右下角聊天窗口**（正常入口）
-2. 按 **Esc**
-3. 等 **30 秒**自动关闭
-4. Console 里执行，之后封面不再出现：
-
-       window.__HEI_POSTER_DISABLE__ = true; window.__HEI_POSTER__?.dismiss("escape")
-
-5. 永久关闭：
-
-       localStorage.setItem("hei.noPoster", "1")
-
-   恢复：`localStorage.removeItem("hei.noPoster")`
-
-6. 给 <html> 加属性 `data-hei-off` 也能关闭（DevTools 里改，持久）
-
-## 确认插件加载了
-
-F12 打开 Console：
-
-    document.querySelector("#hei-poster-overlay")        // 应返回一个 div
-    getComputedStyle(document.querySelector("#hei-poster-overlay")).zIndex   // 应为 "2000"
-    window.__HEI_POSTER__                                  // 调试句柄，可看 controller / posters
-
-手动切换看某一张：`window.__HEI_POSTER__.showPoster(1)`
+另外动效是**静态先画**的：每次显示先用一开始就有的那一帧顶住，图片落定后再交给动效接管，所以从托盘回来不会闪白屏。
 
 ## 自检
 
-在工作区目录 D:/X Files/DSH/dsh01/_hei-poster/plugin 下：
+在仓库目录下：
 
-    node --check src/index.js           # 宿主半边语法
-    node --test src/client/overlay.test.ts   # 状态机 24 项 + 动效契约 8 项 = 32 项单测
-    node scripts/selfcheck-host.mjs     # 宿主路由 38 项（白名单/Range/ETag/逃逸）
-    node scripts/selfcheck-client.mjs   # 客户端 44 项，在真实无头 Edge 里跑真产物
-    node scripts/build-client.mjs       # 重建 lib/client.js
+```bash
+node --check src/index.js                # 宿主半边语法
+node --test src/client/overlay.test.ts   # 状态机 24 项 + 动效契约 8 项 = 32 项
+node scripts/selfcheck-host.mjs          # 宿主路由 38 项（白名单 / Range / ETag / 路径逃逸）
+node scripts/selfcheck-client.mjs        # 客户端 44 项，在真实无头 Edge 里跑真产物
+node scripts/build-client.mjs            # 重建 lib/client.js
+```
 
-`selfcheck-client.mjs` 需要本机有 Edge；它会在内存里起一个静态服务，把 /plugins/<id>/assets/ 映射到真实素材，
-然后断言热区门禁（点海报不关、点入口才关）、轮换、武装延迟、禁用开关、Esc、teardown 与零 console.error，
-以及 6 项动效接线：`motionMode` 在图片落定后变成 `"animated"`、`seekMotion(0/0.3333/0.5/0.99)` 的定帧不透明度、
+`selfcheck-client.mjs` 需要本机有 Edge；它在内存里起一个静态服务，把 `/plugins/<id>/assets/` 映射到真实素材，
+然后断言热区门禁（点海报不关、点入口才关）、轮换、武装延迟、禁用开关、Esc、teardown、零 `console.error`，
+以及 6 项动效接线：`motionMode` 在图片落定后变成 `"animated"`、`seekMotion(0 / 0.3333 / 0.5 / 0.99)` 的定帧不透明度、
 循环首尾一致、关闭封面后 `seekMotion` 不抛异常。
 
 ## 设计约束（不要动）
 
-- 客户端半边 `export const inject = []`：只用 DOM，不读任何服务，从根上避开
-  "cannot get property X without inject" 这条最常见的插件半失效死法。
-- 产物 `lib/client.js` 的 `require()` 清单为**空**——不依赖宿主任何外部模块。
-  一旦新增 import，必须确认目标在宿主 staticModules seed 表里（当前是 react / react/jsx-runtime /
-  react-dom / react-dom/client / @deepseek-ai/cordis / dsh-client-store / dsh-client-ui-slots /
-  dsh-client-ui-primitives / dsh-client-ui-dockkit 九个），否则浏览器里会直接抛异常、封面不出现。
-- 浮层挂在 document.body 下、#root 的同级兄弟，z-index 2000（宿主最大 1100）。
-- **绝不写 <html> 背景**：宿主主题已保证 body 不透明，而内联的 html 背景会在 macOS vibrancy 下把窗口刷黑且无法恢复。
-- `apply()` 第一句就注册 ctx.effect teardown（可变 ref 后装实现），保证半成品也能被清理。
-- 我们的 CSS 只注入 shadow root，绝不进 document.head，避免污染宿主 UI。
+- 客户端半边 `export const inject = []`：只用 DOM，不读任何服务，从根上避开 "cannot get property X without inject"。
+- 产物 `lib/client.js` 的 `require()` 清单为**空**——不依赖宿主任何外部模块。宿主只 seed 九个 react 相关条目
+  （react / react/jsx-runtime / react-dom / react-dom/client / @deepseek-ai/cordis / dsh-client-store /
+  dsh-client-ui-slots / dsh-client-ui-primitives / dsh-client-ui-dockkit），多一个 import 浏览器里就直接抛异常。
+- 浮层挂在 `document.body` 下、`#root` 的同级兄弟，`z-index: 2000`（宿主最大 1100）。
+- **绝不写 `<html>` 背景**：宿主主题已保证 body 不透明，而内联的 html 背景会在 macOS vibrancy 下把窗口刷黑且无法恢复。
+- `apply()` 第一句就注册 `ctx.effect` teardown（可变 ref 后装实现），保证半成品也能被清理。
+- 我们的 CSS 只注入 shadow root（动效引擎也只把自己那份 `<style>` 塞进 `.stage`），绝不进 `document.head`。
 - 无任何第三方运行时依赖，不会遮蔽 profile 里 hoisted 的宿主依赖。
 
-## 安装位置
+## 目录
 
-    <你的 .dsh 目录>\profiles\desktop\node_modules\dsh-client-hei-poster
-    （Windows 上默认是 %USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-client-hei-poster）
+```
+src/index.js            宿主半边：白名单路由 + ETag/304 + Range/206/416 + 防路径逃逸
+src/client/index.tsx    浏览器半边：浮层、状态机接线、动效接管、降级
+src/client/overlay.ts   显示时机状态机（托盘恢复 vs 遮挡）· 有单测
+src/client/motion.ts    12 秒循环转场引擎 · 零依赖
+src/client/entry.ts     右下角「小能量精灵」入口
+src/client/lines.ts     入口文案
+lib/client.js           构建产物（window.__ModuleLoader__.load 包装，require 清单为空）
+assets/poster-*.png     两张海报素材 1536×1024
+docs/                   README 用的动效图与静图
+```
 
-profile 的 package.json 里 `dependencies` 与 `dsh.profile.bundles` **两者都必须有**，缺一不加载。
-用桌面版自带 pnpm（resources/runtime/pnpm/bin/pnpm.mjs，v11.7.0）安装，**不要**用全局 pnpm。
+## License
+
+MIT
